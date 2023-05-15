@@ -1,20 +1,19 @@
 
 import datetime
-from decimal import Decimal
 import logging
+from decimal import Decimal
 from typing import Optional
+
 import fastapi
 from sqlmodel import Session, select
-from sqlalchemy.orm import load_only
 
-from .db import Artist, Album, create_db, db
-
+from .db import Album, Artist, create_db, get_session
 
 app = fastapi.FastAPI(
     openapi_url="/openapi.json",
     docs_url="/docs",
 )
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 
 @app.on_event("startup")
@@ -29,10 +28,8 @@ def read_root():
 
 
 @app.get("/artists", response_model=list[Artist])
-async def list_artists():
-    with Session(db) as s:
-        # TODO make sure doesn't return albums
-        return s.exec(select(Artist)).all()
+async def list_artists(*, session: Session = fastapi.Depends(get_session)):
+    return session.exec(select(Artist)).all()
 
 
 @app.get("/artist/{artist_id}/albums", response_model=list[Album])
@@ -42,7 +39,8 @@ async def get_albums(
     price_lte: Optional[Decimal] = None,
     date_gte: Optional[datetime.date] = None,
     date_lte: Optional[datetime.date] = None,
-    include_tracks: bool = False
+    include_tracks: bool = False,
+    session: Session = fastapi.Depends(get_session)
 ):
     if price_gte and price_lte and price_gte > price_lte:
         raise fastapi.HTTPException(
@@ -55,32 +53,31 @@ async def get_albums(
             detail='date_gte must be less than date_lte'
         )
 
-    with Session(db) as s:
-        # TODO: consider erroring if artist doesn't exist
-        q = (select(Album)
-            .where(Album.artist_id == artist_id)
-        )
+    # TODO: consider erroring if artist doesn't exist
+    q = (select(Album)
+        .where(Album.artist_id == artist_id)
+    )
 
-        if price_gte:
-            q = q.where(Album.price >= price_gte)
-        if price_lte:
-            q = q.where(Album.price <= price_lte)
-        if date_gte:
-            q = q.where(Album.release_date >= date_gte)
-        if date_lte:
-            q = q.where(Album.release_date <= date_lte)
+    if price_gte:
+        q = q.where(Album.price >= price_gte)
+    if price_lte:
+        q = q.where(Album.price <= price_lte)
+    if date_gte:
+        q = q.where(Album.release_date >= date_gte)
+    if date_lte:
+        q = q.where(Album.release_date <= date_lte)
 
-        albums = s.exec(q).all()
-        # Hack—better to do this in select with load_onlybut hitting some SQLAlchemy nonsense.
-        if not include_tracks:
-            for a in albums:
-                a.tracks = None
-        return albums
+    albums = session.exec(q).all()
+    # Hack—better to do this in select with load_only, but hitting some SQLAlchemy nonsense.
+    if not include_tracks:
+        for a in albums:
+            del a.tracks
+    return albums
 
 
 
 @app.post("/artists", response_model=Artist)
-async def create_artist(artist: Artist):
+async def create_artist(artist: Artist, session: Session = fastapi.Depends(get_session)):
     if artist.id is not None:
         raise fastapi.HTTPException(
             status_code=400, 
@@ -94,15 +91,14 @@ async def create_artist(artist: Artist):
         )
 
 
-    with Session(db) as s:
-        s.add(artist)
-        s.commit()
-        s.refresh(artist)
-        return artist
+    session.add(artist)
+    session.commit()
+    session.refresh(artist)
+    return artist
 
 
 @app.post("/artist/{artist_id}/albums", response_model=Album)
-async def create_album(album: Album):
+async def create_album(album: Album, session: Session = fastapi.Depends(get_session)):
     if album.id is not None:
         raise fastapi.HTTPException(
             status_code=400, 
@@ -115,8 +111,7 @@ async def create_album(album: Album):
             detail='Cannot create artist with this endpoint'
         )
 
-    with Session(db) as s:
-        s.add(album)
-        s.commit()
-        s.refresh(album)
-        return album
+    session.add(album)
+    session.commit()
+    session.refresh(album)
+    return album
